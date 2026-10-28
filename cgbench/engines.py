@@ -61,8 +61,11 @@ def save_video(frames, path: Path, fps: int) -> str | None:
     try:
         d = path.with_suffix("")
         d.mkdir(parents=True, exist_ok=True)
-        for i, im in enumerate(frames):
-            im.save(d / f"{i:04d}.png")
+        # No encoder on this box: keep a few key frames for review instead of
+        # writing 121 PNGs per run (a 24h day would otherwise eat ~100 GB).
+        step = max(1, len(frames) // 6)
+        for i, im in enumerate(frames[::step][:6]):
+            im.save(d / f"frame-{i:02d}.png")
         return str(d)
     except Exception:  # noqa: BLE001
         return None

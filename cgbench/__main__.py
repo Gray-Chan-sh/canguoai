@@ -44,9 +44,16 @@ def cmd_shots(_args) -> int:
     return 0
 
 
+def cmd_prefetch(args) -> int:
+    from .prefetch import run
+
+    return run(top=args.top, dry_run=args.dry_run)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="cgbench")
-    ap.add_argument("what", choices=["plan", "env", "catalog", "phase", "all", "report", "shots"])
+    ap.add_argument("what", choices=["plan", "env", "catalog", "prefetch", "phase",
+                                     "all", "report", "shots"])
     ap.add_argument("phase", nargs="?", help="phase name (for `phase`)")
     ap.add_argument("--dry-run", action="store_true",
                     help="synthetic engine: validate the plan without weights")
@@ -66,6 +73,8 @@ def main(argv=None) -> int:
         return cmd_env(args)
     if args.what == "catalog":
         return cmd_catalog(args)
+    if args.what == "prefetch":
+        return cmd_prefetch(args)
     if args.what == "shots":
         return cmd_shots(args)
     if args.what == "report":
