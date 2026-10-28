@@ -55,7 +55,12 @@ def _has(mod: str) -> bool:
 
 
 class TerminalRecorder:
-    """Write an asciinema v2 .cast while a command runs in a pty."""
+    """Write an asciinema v2 .cast while a command runs in a pty.
+
+    A pty (not a pipe) is the whole trick: the child sees a real terminal, so
+    colours, tqdm progress bars and isatty() behave exactly as they would in a
+    normal session. Piping stdout would silently change what you are recording.
+    """
 
     def __init__(self, name: str, cols: int = COLS, rows: int = ROWS):
         self.path = CAP / f"{name}.cast"
@@ -64,6 +69,12 @@ class TerminalRecorder:
     def run(self, argv: list[str]) -> int:
         import pty
         import select
+
+        try:
+            import termios
+            import tty
+        except ImportError:  # non-Unix
+            termios = tty = None
 
         fh = self.path.open("w", encoding="utf-8")
         fh.write(json.dumps({
@@ -78,16 +89,35 @@ class TerminalRecorder:
         if pid == 0:  # child
             os.execvp(argv[0], argv)
 
+        saved = None
+        stdin_fd = sys.stdin.fileno()
+        watch_in = sys.stdin.isatty() and termios is not None
+        if watch_in:
+            try:
+                saved = termios.tcgetattr(stdin_fd)
+                tty.setraw(stdin_fd)
+            except Exception:  # noqa: BLE001
+                watch_in = False
+
         start = time.time()
+        # The command line is written into the cast itself: record() execs the target
+        # directly (no shell prompt), so without this the cast starts mid-output and
+        # nobody editing the podcast knows what was run.
+        cmdline = "$ " + " ".join(argv) + "\n"
+        fh.write(json.dumps([0.0, "o", cmdline]) + "\n")
+        fh.flush()
+        sys.stdout.write(cmdline)
+        sys.stdout.flush()
         try:
             while True:
+                watch = [fd] + ([stdin_fd] if watch_in else [])
                 try:
-                    r, _, _ = select.select([fd], [], [], 0.2)
+                    r, _, _ = select.select(watch, [], [], 0.2)
                 except OSError:
                     break
                 if fd in r:
                     try:
-                        data = os.read(fd, 4096)
+                        data = os.read(fd, 8192)
                     except OSError:
                         break
                     if not data:
@@ -97,13 +127,28 @@ class TerminalRecorder:
                     fh.flush()
                     sys.stdout.write(txt)
                     sys.stdout.flush()
+                if watch_in and stdin_fd in r:
+                    try:
+                        keys = os.read(stdin_fd, 1024)
+                    except OSError:
+                        keys = b""
+                    if keys:
+                        os.write(fd, keys)
+                    else:
+                        watch_in = False   # stdin closed; keep recording output
         finally:
+            if saved is not None:
+                try:
+                    termios.tcsetattr(stdin_fd, termios.TCSADRAIN, saved)
+                except Exception:  # noqa: BLE001
+                    pass
             fh.close()
             try:
                 _, status = os.waitpid(pid, 0)
+                rc = os.waitstatus_to_exitcode(status)
             except Exception:  # noqa: BLE001
-                status = 0
-        return status
+                rc = 0
+        return rc
 
 
 def record(name: str, argv: list[str]) -> int:
