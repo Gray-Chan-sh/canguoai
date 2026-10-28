@@ -2,96 +2,173 @@
 
 Answers with checks, not prose. Two different questions get two different verdicts:
 
-  reproduce  - same numbers, same machine, same weights, same code  (needs pins)
-  replay     - what was run, in what order, with what outcome       (needs records)
+  reproducible - same code, same deps, same weights, same machine -> same numbers
+  replay only  - what was run, in what order, with what outcome
+  cannot replay- not even the above
 
-A day of results that can be replayed but not reproduced is still useful, but you
-must know which one you have before you quote a number from it.
+The audit works on a live results/ directory or on a snapshot pulled to a laptop,
+so the person reading the report can check the claim instead of trusting it.
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
+from pathlib import Path
 
-from .harness import OUT, RUNS, rows
-
-
-def _ok(cond: bool, name: str, detail: str = "") -> tuple[str, str, str]:
-    return (("PASS" if cond else "WARN"), name, detail)
+from .harness import OUT
 
 
-def collect() -> list[tuple[str, str, str]]:
-    checks: list[tuple[str, str, str]] = []
-    rs = rows()
+def _rows(out: Path) -> list[dict]:
+    f = out / "results.jsonl"
+    if not f.exists():
+        return []
+    rs = []
+    for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            rs.append(json.loads(line))
+        except Exception:  # noqa: BLE001
+            continue
+    return rs
 
-    env = next((r.get("env", {}) for r in rs if r["key"] == "env:start"), {})
+
+def _check(cond: bool, name: str, detail: str = "") -> dict:
+    return {"status": "PASS" if cond else "WARN", "name": name, "detail": detail}
+
+
+def _verify_manifest(out: Path, doc: dict) -> tuple[int, int, list[str]]:
+    good = bad = 0
+    broken: list[str] = []
+    for f in doc.get("files", []):
+        if not f.get("sha256"):
+            continue
+        p = out / f["path"]
+        if not p.exists():
+            broken.append(f["path"])
+            bad += 1
+            continue
+        if hashlib.sha256(p.read_bytes()).hexdigest() == f["sha256"]:
+            good += 1
+        else:
+            broken.append(f["path"])
+            bad += 1
+    return good, bad, broken[:5]
+
+
+def collect(out: Path, verify: bool = True) -> tuple[list[dict], dict]:
+    rs = _rows(out)
+    checks: list[dict] = []
+
     runs = [r for r in rs if r.get("status") in ("ok", "error")]
-
-    checks.append(_ok(bool(runs), "results.jsonl has runs", f"{len(runs)} runs"))
-    checks.append(_ok(bool(env), "env snapshot", "env:start record"))
-
+    env = next((r.get("env", {}) for r in rs if r.get("key") == "env:start"), {})
     git = (env.get("git") or {}) if env else {}
-    checks.append(_ok(bool(git.get("commit")), "code commit pinned",
-                      git.get("commit") or "git metadata missing (tarball?)"))
-    checks.append(_ok(git.get("dirty") is False, "working tree clean",
-                      "dirty" if git.get("dirty") else "clean/unknown"))
 
-    checks.append(_ok((OUT / "requirements.lock").exists(), "dependency lock",
-                      "results/requirements.lock"))
-
+    checks.append(_check(bool(runs), "results.jsonl has runs", f"{len(runs)} runs"))
+    checks.append(_check(bool(env), "env snapshot", "env:start record"))
+    checks.append(_check(bool(git.get("commit")), "code commit pinned",
+                         git.get("commit") or "no git metadata (tarball?)"))
+    checks.append(_check(git.get("dirty") is False, "working tree clean",
+                         "dirty" if git.get("dirty") else "clean/unknown"))
+    checks.append(_check((out / "requirements.lock").exists(), "dependency lock",
+                         "requirements.lock"))
     for key in ("torch", "cuda", "diffusers", "cc", "vram_gib"):
-        checks.append(_ok(bool(env.get(key)), f"env.{key}", str(env.get(key))))
+        checks.append(_check(bool(env.get(key)), f"env.{key}", str(env.get(key))))
 
-    revs = {r.get("model_revision") for r in runs if r.get("model")}
     unknown = [r.get("model") for r in runs if r.get("model") and not r.get("model_revision")]
-    checks.append(_ok(bool(revs) and not unknown, "weights pinned (HF revision)",
-                      f"{len(revs)} revision(s)" + (f", {len(unknown)} unresolved" if unknown else "")))
+    revs = {r.get("model_revision") for r in runs if r.get("model_revision")}
+    checks.append(_check(not unknown, "weights pinned (HF revision)",
+                         f"{len(revs)} revision(s)" + (f", {len(unknown)} unresolved" if unknown else "")))
 
-    bad = [r["key"] for r in runs if r.get("status") == "ok"
-           and not (r.get("seconds") and r.get("peak_gib") is not None)]
-    checks.append(_ok(not bad, "ok runs carry timing + memory", f"{len(bad)} incomplete"))
+    incomplete = [r["key"] for r in runs if r.get("status") == "ok"
+                  and not (r.get("seconds") and r.get("peak_gib") is not None)]
+    checks.append(_check(not incomplete, "ok runs carry timing + memory", f"{len(incomplete)} incomplete"))
 
     no_meta = [r["key"] for r in runs if r.get("status") == "ok"
                and not all(k in r for k in ("width", "height", "frames", "fps", "steps", "prompt"))]
-    checks.append(_ok(not no_meta, "ok runs carry their config", f"{len(no_meta)} incomplete"))
+    checks.append(_check(not no_meta, "ok runs carry their config", f"{len(no_meta)} incomplete"))
 
     errs = [r for r in runs if r.get("status") == "error"]
-    thin = [r["key"] for r in errs if not r.get("error")]
-    checks.append(_ok(not thin, "failures recorded with a reason",
-                      f"{len(errs)} failures, {len(thin)} without an error string"))
+    no_reason = [r["key"] for r in errs if not r.get("error")]
+    no_trace = [r["key"] for r in errs
+                if r.get("traceback_file") and not (out / r["traceback_file"]).exists()]
+    checks.append(_check(not no_reason, "failures carry a reason",
+                         f"{len(errs)} failure(s), {len(no_reason)} without error text"))
+    checks.append(_check(not no_trace, "failures carry a full traceback",
+                         f"{len(no_trace)} missing file(s)"))
 
-    pub = OUT / "publish"
+    pub = out / "publish"
     for f in ("report.md", "metrics.csv", "frontier.json"):
-        checks.append(_ok((pub / f).exists(), f"publish/{f}", ""))
+        checks.append(_check((pub / f).exists(), f"publish/{f}", ""))
 
-    casts = list((OUT / "captures").glob("*.cast")) if (OUT / "captures").exists() else []
-    checks.append(_ok(bool(casts), "podcast captures", f"{len(casts)} cast file(s)"))
+    vids = [r for r in runs if r.get("status") == "ok" and str(r.get("video", "")).endswith(".mp4")]
+    present = [r for r in vids if r.get("video") and (out / r["video"]).exists()]
+    if vids:
+        checks.append(_check(len(present) == len(vids), "generated clips present",
+                             f"{len(present)}/{len(vids)} (media layer may not be pulled)"))
+    else:
+        checks.append(_check(False, "generated clips present", "no mp4 in this snapshot"))
 
-    phases = {r.get("phase") for r in runs}
-    checks.append(_ok(len(phases) >= 3, "phase coverage", ", ".join(sorted(p for p in phases if p))))
+    casts = list((out / "captures").glob("*.cast")) if (out / "captures").exists() else []
+    checks.append(_check(bool(casts), "podcast captures", f"{len(casts)} cast file(s)"))
 
-    return checks
+    phases = sorted({r["phase"] for r in runs if r.get("phase")})
+    checks.append(_check(len(phases) >= 3, "phase coverage", ", ".join(phases)))
+
+    manifest_doc = {}
+    mpath = out / "manifest.json"
+    checks.append(_check(mpath.exists(), "hash manifest", "manifest.json"))
+    if mpath.exists():
+        try:
+            manifest_doc = json.loads(mpath.read_text(encoding="utf-8"))
+            if verify:
+                good, bad, broken = _verify_manifest(out, manifest_doc)
+                checks.append(_check(bad == 0, "manifest hashes verify",
+                                     f"{good} ok, {bad} bad" + (f" ({', '.join(broken)})" if broken else "")))
+        except Exception as exc:  # noqa: BLE001
+            checks.append(_check(False, "manifest readable", str(exc)[:80]))
+
+    return checks, {"env": env, "manifest": {k: v for k, v in manifest_doc.items() if k != "files"}}
 
 
-def verdict(checks: list[tuple[str, str, str]]) -> tuple[str, str]:
-    kinds = {k for k, _, _ in checks}
-    if "FAIL" in kinds:
+def verdict(checks: list[dict]) -> tuple[str, str]:
+    warn = {c["name"] for c in checks if c["status"] != "PASS"}
+    if "results.jsonl has runs" in warn or "env snapshot" in warn:
         return "cannot replay", "缺少基础记录，连过程都还原不了"
-    if any(name in ("code commit pinned", "weights pinned (HF revision)", "dependency lock")
-           and k != "PASS" for k, name, _ in checks):
-        return "replay only", "能还原“跑了什么、结果如何”，但不能保证重跑得到同样的数"
-    return "reproducible", "代码、依赖、权重都已钉死，同一台机器可以复现"
+    pins = {"code commit pinned", "working tree clean", "dependency lock",
+            "weights pinned (HF revision)", "hash manifest"}
+    if pins & warn:
+        return "replay only", "能还原“跑了什么、结果如何”，但不保证重跑得到同样的数"
+    return "reproducible", "代码、依赖、权重、清单都可核对，同机可复现"
 
 
-def main() -> int:
-    checks = collect()
-    width = max(len(n) for _, n, _ in checks) + 2
-    print(f"\n{OUT}\n" + "=" * 74)
-    for status, name, detail in checks:
-        mark = {"PASS": " ok ", "WARN": "warn"}.get(status, status)
-        print(f"[{mark}] {name.ljust(width)} {detail}")
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="cgbench audit")
+    ap.add_argument("--results", default=None, help="audit a pulled snapshot instead of ./results")
+    ap.add_argument("--no-verify", action="store_true", help="skip manifest hash verification")
+    ap.add_argument("--json", action="store_true", help="print machine-readable output")
+    args = ap.parse_args(argv)
+
+    out = Path(args.results).expanduser().resolve() if args.results else OUT
+    checks, meta = collect(out, verify=not args.no_verify)
     kind, why = verdict(checks)
-    print("=" * 74)
-    print(f"verdict: {kind} — {why}\n")
+
+    doc = {"results": str(out), "verdict": kind, "reason": why, "checks": checks, **meta}
+    try:
+        (out / "audit.json").write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+    if args.json:
+        print(json.dumps(doc, ensure_ascii=False, indent=2))
+    else:
+        width = max(len(c["name"]) for c in checks) + 2
+        print(f"\n{out}\n" + "=" * 76)
+        for c in checks:
+            mark = {"PASS": " ok ", "WARN": "warn"}.get(c["status"], c["status"])
+            print(f"[{mark}] {c['name'].ljust(width)} {c['detail']}")
+        print("=" * 76)
+        print(f"verdict: {kind} — {why}\n")
+
     return 0 if kind != "cannot replay" else 1
 
 

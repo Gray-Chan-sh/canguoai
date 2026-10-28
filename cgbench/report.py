@@ -206,6 +206,13 @@ def build() -> dict:
 
     md = []
     md.append(f"# 视频生成能力评估 — {env.get('device', '?')}\n")
+
+    from .audit import collect as _audit_collect, verdict as _audit_verdict
+
+    _checks, _ = _audit_collect(OUT, verify=False)
+    _kind, _why = _audit_verdict(_checks)
+    md.append(f"> **可信度：`{_kind}`** — {_why}")
+    md.append(f"> 复核方式：`python3 -m cgbench audit`（对拉回本地的快照同样适用）\n")
     md.append(f"- 架构 `{env.get('arch')}` / 计算能力 `{env.get('cc')}` / "
               f"显存 `{env.get('vram_gib')} GiB`")
     md.append(f"- torch `{env.get('torch')}` cuda `{env.get('cuda')}` "

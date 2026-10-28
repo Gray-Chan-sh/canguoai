@@ -8,10 +8,13 @@ Run this the night before, or right after the instance boots and before `run_day
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
+from pathlib import Path
 
 from .catalog import load_shortlist
+from .harness import OUT
 
 GIB = 1024 ** 3
 
@@ -49,6 +52,7 @@ def run(top: int | None = None, dry_run: bool = False) -> int:
     endpoint = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
     print(f"\nendpoint: {endpoint}")
     failed = []
+    revisions: dict[str, str | None] = {}
     for e in items:
         print(f"\n>> {e['id']}", flush=True)
         try:
@@ -58,10 +62,18 @@ def run(top: int | None = None, dry_run: bool = False) -> int:
                 max_workers=4,
                 resume_download=True,
             )
+            # snapshot dirs are named by commit sha: this is the weights pin, offline
+            sha = Path(path).name if "snapshots" in Path(path).parts else None
+            revisions[e["id"]] = sha
             print(f"   cached -> {path}")
         except Exception as exc:  # noqa: BLE001
             print(f"   FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
             failed.append(e["id"])
+
+    if revisions:
+        p = OUT / "revisions.json"
+        p.write_text(json.dumps(revisions, indent=2), encoding="utf-8")
+        print(f"\nrevisions pinned -> {p}")
 
     if failed:
         print(f"\n{len(failed)} failed: " + ", ".join(failed), file=sys.stderr)

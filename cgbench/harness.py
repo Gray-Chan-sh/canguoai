@@ -101,8 +101,44 @@ def _git_info() -> dict:
     rc, commit = run("rev-parse", "--short", "HEAD")
     if rc != 0 or not commit:
         return {"commit": None, "dirty": None}
-    rc2, dirty = run("status", "--porcelain")
+    rc2, dirty = run("status", "--porcelain", "--untracked-files=no")
     return {"commit": commit, "dirty": bool(dirty) if rc2 == 0 else None}
+
+
+def write_manifest(extra: dict | None = None) -> Path:
+    """A hash manifest is what makes "complete" checkable rather than claimed.
+
+    Large artefacts (mp4) are listed with size but not hashed: hashing hundreds of
+    megabytes on a metered box costs more than it proves. Everything small is hashed.
+    """
+    import hashlib
+
+    files = []
+    for p in sorted(OUT.rglob("*")):
+        if not p.is_file() or p.name == "manifest.json":
+            continue
+        rel = str(p.relative_to(OUT))
+        size = p.stat().st_size
+        if p.suffix == ".mp4" or size > 32 * 2**20:
+            files.append({"path": rel, "size": size, "sha256": None,
+                          "unhashed": "large or binary media"})
+            continue
+        files.append({"path": rel, "size": size,
+                      "sha256": hashlib.sha256(p.read_bytes()).hexdigest()})
+
+    doc = {
+        "generated": now(),
+        "cgbench_version": _version(),
+        "git": _git_info(),
+        "revisions": _REVS,
+        "count": len(files),
+        "bytes": sum(f["size"] for f in files),
+        "files": files,
+        **(extra or {}),
+    }
+    path = OUT / "manifest.json"
+    path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def write_lockfile() -> Path | None:
@@ -122,17 +158,47 @@ def write_lockfile() -> Path | None:
 _REVS: dict[str, str | None] = {}
 
 
+def _cache_revision(repo_id: str) -> str | None:
+    """Offline fallback: the local HF cache already knows which snapshot is on disk."""
+    base = Path(os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface"))) / "hub"
+    d = base / ("models--" + repo_id.replace("/", "--"))
+    ref = d / "refs" / "main"
+    if ref.exists():
+        return ref.read_text(encoding="utf-8").strip()
+    snaps = d / "snapshots"
+    if snaps.exists():
+        found = sorted(p.name for p in snaps.iterdir() if p.is_dir())
+        if found:
+            return found[-1]
+    return None
+
+
 def model_revision(repo_id: str) -> str | None:
-    """Pin the weights: HF repos are updated in place under the same id."""
+    """Pin the weights: HF repos are updated in place under the same id.
+
+    Online lookup first, then the prefetched revisions file, then the local cache.
+    Three sources because the box may be offline, rate limited, or air-gapped.
+    """
     if repo_id in _REVS:
         return _REVS[repo_id]
-    sha = None
-    try:
-        from huggingface_hub import model_info
 
-        sha = model_info(repo_id, timeout=20).sha
-    except Exception:  # noqa: BLE001
-        sha = None
+    sha = None
+    revfile = OUT / "revisions.json"
+    if revfile.exists():
+        try:
+            sha = json.loads(revfile.read_text(encoding="utf-8")).get(repo_id)
+        except Exception:  # noqa: BLE001
+            sha = None
+    if not sha:
+        try:
+            from huggingface_hub import model_info
+
+            sha = model_info(repo_id, timeout=20).sha
+        except Exception:  # noqa: BLE001
+            sha = None
+    if not sha:
+        sha = _cache_revision(repo_id)
+
     _REVS[repo_id] = sha
     return sha
 

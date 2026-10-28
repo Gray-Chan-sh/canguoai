@@ -12,7 +12,8 @@ import traceback
 
 from . import metrics
 from .engines import build_engine
-from .harness import VIDEOS, Budget, Sampler, emit, env_info, model_revision, skip, write_lockfile
+from .harness import (OUT, VIDEOS, Budget, Sampler, emit, env_info, model_revision,
+                      skip, write_lockfile, write_manifest)
 from .spec import MODELS, NEGATIVE, PHASES, PROMPTS, RESOLUTIONS
 
 # Dynamic registry: spec.MODELS plus whatever the HF screening shortlisted.
@@ -150,8 +151,13 @@ def run_one(pool: EnginePool, cfg: dict, phase: str, idx: int, resume: bool = Tr
             engine_info=res.info,
         )
     except Exception as exc:  # noqa: BLE001
+        tb = traceback.format_exc()
+        errs = OUT / "errors"
+        errs.mkdir(exist_ok=True)
+        f = errs / f"{key.replace(':', '_')}.txt"
+        f.write_text(tb, encoding="utf-8")   # full trace, not a 1200-char excerpt
         rec.update(status="error", error=f"{type(exc).__name__}: {str(exc)[:300]}",
-                   traceback=traceback.format_exc()[-1200:])
+                   traceback=tb[-1200:], traceback_file=str(f.relative_to(OUT)))
 
     emit(key, rec)
     if rec["status"] == "ok":
@@ -229,3 +235,6 @@ def run_all(dry_run: bool = False, resume: bool = True, cpu_offload: bool = Fals
             continue
         run_phase(name, dry_run=dry_run, resume=resume, cpu_offload=cpu_offload,
                   from_catalog=from_catalog)
+
+    manifest = write_manifest({"phases": phases or list(PHASES)})
+    print(f"[manifest] {manifest}")

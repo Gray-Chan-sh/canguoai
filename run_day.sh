@@ -55,6 +55,9 @@ fi
 echo "=== report $(date -u)" | tee -a results/day.log
 python3 -m cgbench report 2>&1 | tee -a results/day.log
 
+echo "=== audit $(date -u)" | tee -a results/day.log
+python3 -m cgbench audit 2>&1 | tee -a results/day.log
+
 # ---- publish --------------------------------------------------------------
 echo "=== push $(date -u)" | tee -a results/day.log
 python3 tools/push.py --git --webhook 2>&1 | tee -a results/day.log

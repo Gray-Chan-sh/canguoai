@@ -136,12 +136,43 @@ python3 -m cgbench report          # -> results/publish/report.md
 
 产物三件：
 
-- `report.md` — 按 O1..O7 的顺序给结论，不是罗列表格
+- `report.md` — 按 O1..O7 的顺序给结论，不是罗列表格；开头带**可信度判定**
 - `metrics.csv` — 每条一行，直接丢进 pandas / Excel 画曲线
 - `frontier.json` — 机器可读的边界值，以后换机器可以直接对比
 
 CSV 里有 `s_per_it`、`s_per_mpframe`（每百万像素帧耗时）、`peak_gib`、`clip`、
 `temporal_err`、`motion`、`flicker`——这几个字段就是全部的分析原料。
+
+---
+
+## 可还原性（这批数据能不能被引用）
+
+```bash
+python3 -m cgbench audit                        # 审计当前 results/
+python3 -m cgbench audit --results cg-results/latest/results   # 审计拉回本地的快照
+```
+
+给三档判定之一，并写进 `report.md` 开头：
+
+| 判定 | 含义 | 触发条件 |
+|---|---|---|
+| `reproducible` | 代码、依赖、权重、清单全部可核对，同机可复现 | 干净工作树 + lockfile + 权重 revision + manifest 校验通过 |
+| `replay only` | 能还原“跑了什么、结果如何”，不保证重跑同数 | 缺任一 pin |
+| `cannot replay` | 连过程都还原不了 | 缺 `results.jsonl` 或 env 快照 |
+
+为了让它有意义，运行时会自动记录四样东西：
+
+| 项 | 落点 | 为什么必须有 |
+|---|---|---|
+| 代码版本 | `env.json` 的 `git.commit` + `dirty` | 否则不知道这批数出自哪版 harness |
+| 依赖快照 | `requirements.lock`（`pip freeze`） | 单个 diffusers 版本号钉不住传递依赖 |
+| 权重版本 | 每条的 `model_revision` | HF 仓库**同名原地更新**，不钉就等于没测过 |
+| 内容清单 | `manifest.json`（逐文件 sha256） | 让“完整”可被验证，而不是被声称 |
+
+`manifest.json` 对大于 32 MB 或 mp4 只记大小不记哈希——在计费机器上算几百 MB 的哈希，代价大于收益。
+
+**还原不了的**：逐比特一致（CUDA 归约顺序非确定）、物理环境（室温/批次）、以及没拉回来的 mp4。
+
 
 ---
 

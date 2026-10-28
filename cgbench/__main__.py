@@ -65,6 +65,7 @@ def main(argv=None) -> int:
     ap.add_argument("--from-catalog", action="store_true",
                     help="run the `models` phase over the HF shortlist")
     ap.add_argument("--top", type=int, default=8, help="catalog: shortlist size")
+    ap.add_argument("--results", default=None, help="audit: snapshot directory to inspect")
     args = ap.parse_args(argv)
 
     if args.what == "plan":
@@ -83,7 +84,7 @@ def main(argv=None) -> int:
         return 0
     if args.what == "audit":
         from .audit import main as audit_main
-        return audit_main()
+        return audit_main(["--results", args.results] if args.results else [])
 
     from . import probes
 
