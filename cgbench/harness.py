@@ -203,6 +203,57 @@ def model_revision(repo_id: str) -> str | None:
     return sha
 
 
+def _cgroup_limit_bytes() -> int | None:
+    """Container memory cap. On GB10 this is not 'just RAM': it caps the unified pool,
+    so a 64 GiB cap makes the 128 GiB card behave like a 64 GiB card, with an OOM that
+    looks like a VRAM error."""
+    for p in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            v = Path(p).read_text(encoding="utf-8").strip()
+        except Exception:  # noqa: BLE001
+            continue
+        if v == "max":
+            return None
+        if v.isdigit():
+            n = int(v)
+            # cgroup v1 uses a huge sentinel for "unlimited"
+            return None if n > 2**60 else n
+    return None
+
+
+def _meminfo() -> dict:
+    try:
+        out = {}
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            k, _, v = line.partition(":")
+            out[k.strip()] = int(v.strip().split()[0]) * 1024
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def memory_facts(vram_gib: float | None = None) -> dict:
+    """How much of the box this process can actually reach, versus what the GPU claims."""
+    gib = lambda b: round(b / 2**30, 1) if b else None  # noqa: E731
+    mem = _meminfo()
+    total, avail = mem.get("MemTotal"), mem.get("MemAvailable")
+    cap = _cgroup_limit_bytes()
+    container = Path("/.dockerenv").exists() or "docker" in sh("head -c 4000 /proc/1/cgroup 2>/dev/null")
+    unified = bool(vram_gib and total and abs(vram_gib - total / 2**30) / (total / 2**30) < 0.15)
+    # "Effective pool" is only meaningful for unified memory; on a discrete card the
+    # cgroup cap limits host RAM, not VRAM.
+    candidates = [x for x in (total, cap) if x] + ([vram_gib * 2**30] if unified and vram_gib else [])
+    return {
+        "container": bool(container),
+        "mem_total_gib": gib(total),
+        "mem_available_gib": gib(avail),
+        "cgroup_cap_gib": gib(cap),
+        "vram_gib": vram_gib,
+        "effective_pool_gib": gib(min(candidates)) if unified and candidates else None,
+        "unified": unified,
+    }
+
+
 def env_info() -> dict:
     info = {
         "host": platform.node(),
@@ -239,6 +290,7 @@ def env_info() -> dict:
     info["driver"] = sh("nvidia-smi --query-gpu=driver_version --format=csv,noheader")
     info["ffmpeg"] = sh("ffmpeg -version 2>&1 | head -1")
     info["disk_free_gib"] = round(shutil.disk_usage(OUT).free / 2**30, 1)
+    info["memory"] = memory_facts(info.get("vram_gib"))
     return info
 
 
