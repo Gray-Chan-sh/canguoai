@@ -151,8 +151,8 @@ CSV 里有 `s_per_it`、`s_per_mpframe`（每百万像素帧耗时）、`peak_gi
 
 | 层 | 内容 | 频率 | 体积 |
 |---|---|---|---|
-| 小文件 | `results.jsonl`、`publish/`、`env.json`、`catalog.json`、`day.log` | 5–10 分钟 | ~2 MB |
-| 成片 | `videos/**/*.mp4` | 每小时 | 几百 MB |
+| 小文件 | `results.jsonl`、`publish/`、`captures/`、`smi-*.csv`、`env.json`、`catalog.json`、`day.log` | 5–10 分钟 | ~2 MB |
+| 媒体 | `videos/**/*.mp4`、`captures/*.mp4`、`publish/thumbs/*.mp4`、关键帧 png | 每小时 | 几百 MB |
 | 归档 | 整个 `publish/` 进 git | 收工时 | 同小文件 |
 
 ```bash

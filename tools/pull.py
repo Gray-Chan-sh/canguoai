@@ -36,7 +36,12 @@ SMALL = [
     "results/catalog.json",
     "results/day.log",
     "results/publish",
+    "results/captures",      # podcast material: .cast and .png are small
 ]
+# mp4 lives in its own, mtime-guarded layer: desktop recordings and clips are MBs,
+# and pulling them every 10 minutes would compete with a running prefetch.
+VIDEO_DIRS = ["results/videos", "results/captures", "results/publish/thumbs"]
+VIDEO_GLOBS = ["*.mp4", "frame-*.png"]
 
 
 def _ssh_base(args) -> list[str]:
@@ -70,14 +75,19 @@ def _cd(remote_dir: str) -> str:
 def _small_cmd(remote_dir: str) -> str:
     paths = " ".join(shlex.quote(p) for p in SMALL)
     # --ignore-failed-read: a phase that has not produced publish/ yet must not fail the pull
+    # --exclude: keep the minute-level layer tiny; mp4 rides in the video layer
+    # $(ls ...): one telemetry csv per run, ~20 KB each - the thermal curve lives here
     return (f"{_cd(remote_dir)} && "
-            f"tar czf - --ignore-failed-read {paths} 2>/dev/null")
+            f"tar czf - --ignore-failed-read --exclude='*.mp4' {paths} "
+            f"$(ls results/smi-*.csv 2>/dev/null) 2>/dev/null")
 
 
 def _video_cmd(remote_dir: str, min_age_min: int) -> str:
     # only files untouched for N minutes: never grab an mp4 that is still being written
+    dirs = " ".join(shlex.quote(d) for d in VIDEO_DIRS)
+    name_expr = " -o ".join(f"-name '{g}'" for g in VIDEO_GLOBS)
     return (f"{_cd(remote_dir)} && "
-            f"find results/videos -type f -name '*.mp4' -mmin +{min_age_min} -print0 "
+            f"find {dirs} -type f \\( {name_expr} \\) -mmin +{min_age_min} -print0 "
             f"2>/dev/null | tar czf - --null --files-from=- 2>/dev/null")
 
 
@@ -122,8 +132,10 @@ def pull_once(args) -> int:
     if args.with_videos:
         vtgz = history / f"videos-{ts}.tgz"
         if _run_remote(args, _video_cmd(args.remote_dir, args.video_age_min), vtgz):
+            mb = vtgz.stat().st_size / 2**20
             m = _extract(vtgz, dest / "latest")
-            print(f"           + {m} video files, {vtgz.stat().st_size / 2**20:.1f} MB")
+            print(f"           + {m} media files, {mb:.1f} MB")
+            vtgz.unlink(missing_ok=True)   # extracted already; keeping it doubles local disk
         else:
             vtgz.unlink(missing_ok=True)
 
@@ -142,9 +154,9 @@ def main() -> int:
                     help="seconds between pulls; 0 = once")
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--with-videos", action="store_true",
-                    help="also pull finished mp4s (bigger, still mtime-guarded)")
+                    help="also pull finished mp4 / key frames (mtime-guarded, deleted after extract)")
     ap.add_argument("--video-age-min", type=int, default=3,
-                    help="only videos untouched for this many minutes")
+                    help="only media untouched for this many minutes")
     args = ap.parse_args()
 
     if args.once or args.interval <= 0:
