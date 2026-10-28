@@ -141,6 +141,51 @@ CSV 里有 `s_per_it`、`s_per_mpframe`（每百万像素帧耗时）、`peak_gi
 
 ---
 
+## 把结果拉回本地（不打断运行）
+
+推荐分层，别用一个命令解决所有事：
+
+| 层 | 内容 | 频率 | 体积 |
+|---|---|---|---|
+| 小文件 | `results.jsonl`、`publish/`、`env.json`、`catalog.json`、`day.log` | 5–10 分钟 | ~2 MB |
+| 成片 | `videos/**/*.mp4` | 每小时 | 几百 MB |
+| 归档 | 整个 `publish/` 进 git | 收工时 | 同小文件 |
+
+```bash
+# 本机（Windows 也可以），每 10 分钟拉一次小文件
+python tools/pull.py --host <ip> --port <port> --key ~/.ssh/id_ed25519 --interval 600
+
+# 顺带拉已经写完的 mp4（只拉 3 分钟没动过的，避免抓到半截文件）
+python tools/pull.py --host <ip> --once --with-videos
+```
+
+落地结构：
+
+```
+cg-results/
+├── latest/            # 永远是最新快照（覆盖）
+└── history/*.tgz      # 带时间戳的小快照，几 KB 一个
+```
+
+**为什么不会影响运行：**
+
+1. 远程只执行一条只读的 `tar`，不写、不锁、不改任何文件；
+2. 视频按 `-mmin +N` 过滤，**正在写的 mp4 不会被读**；
+3. 单次 2 MB 量级，跟 1 Gbps 的权重下载比是噪声；
+4. `--ignore-failed-read` — 某个阶段还没产出 `publish/` 时不会报错；
+5. `results.jsonl` 是逐行追加的，解包时最后一行可能被截断——**读取端本来就跳过坏行**，不影响统计。
+
+> 两个实现细节：`emit()` 现在每条都 `flush()`，否则你在外面拉到的是几分钟前的旧数据；
+> `cd '~/x'` 不会展开波浪号，代码里换成了 `cd "$HOME"/x`。
+
+拉回来的 `latest/` 可以直接跑本地分析：
+
+```bash
+python -c "import json;[print(json.loads(l)['key']) for l in open('cg-results/latest/results/results.jsonl')]"
+```
+
+---
+
 ## 推送结果
 
 ```bash

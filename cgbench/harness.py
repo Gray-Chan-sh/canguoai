@@ -52,6 +52,7 @@ def emit(key: str, payload: dict) -> None:
     rec = {"key": key, "ts": now(), **payload}
     with RUNS.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        fh.flush()          # a reader on the other end of an ssh pipe must see it now
     DONE.add(key)
 
 
