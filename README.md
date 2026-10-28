@@ -107,6 +107,10 @@ python3 -m cgbench.capture run 03-smoke -- python3 -m cgbench phase smoke
 ## 跑起来
 
 ```bash
+# 取代码（国内机器 github 慢的话用 scp 那个 tar.gz，效果一样）
+git clone https://github.com/Gray-Chan-sh/canguoai.git canguo-videobench
+cd canguo-videobench
+
 # 0) 先在本机（或任何有 python 的机器）验证整套编排，不下载权重，几分钟
 python3 -m cgbench all --dry-run
 python3 -m cgbench report
