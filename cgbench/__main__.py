@@ -53,7 +53,7 @@ def cmd_prefetch(args) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="cgbench")
     ap.add_argument("what", choices=["plan", "env", "catalog", "prefetch", "phase",
-                                     "all", "report", "shots"])
+                                     "all", "report", "shots", "audit"])
     ap.add_argument("phase", nargs="?", help="phase name (for `phase`)")
     ap.add_argument("--dry-run", action="store_true",
                     help="synthetic engine: validate the plan without weights")
@@ -81,6 +81,9 @@ def main(argv=None) -> int:
         from .report import build
         build()
         return 0
+    if args.what == "audit":
+        from .audit import main as audit_main
+        return audit_main()
 
     from . import probes
 

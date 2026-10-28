@@ -23,6 +23,15 @@ def now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _version() -> str:
+    try:
+        from . import __version__
+
+        return __version__
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 def sh(cmd: str, timeout: int = 30) -> str:
     try:
         p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
@@ -75,6 +84,59 @@ def rows() -> list[dict]:
 # ---------------------------------------------------------------- environment
 
 
+def _git_info() -> dict:
+    """Which code produced these numbers. A tarball without .git returns blanks.
+
+    Uses the list form on purpose: ROOT contains spaces on a typical Windows path,
+    and `git -C <path>` through a shell silently fails there.
+    """
+    def run(*args):
+        try:
+            p = subprocess.run(["git", "-C", str(ROOT), *args],
+                               capture_output=True, text=True, timeout=10)
+            return p.returncode, p.stdout.strip()
+        except Exception:  # noqa: BLE001
+            return 1, ""
+
+    rc, commit = run("rev-parse", "--short", "HEAD")
+    if rc != 0 or not commit:
+        return {"commit": None, "dirty": None}
+    rc2, dirty = run("status", "--porcelain")
+    return {"commit": commit, "dirty": bool(dirty) if rc2 == 0 else None}
+
+
+def write_lockfile() -> Path | None:
+    """A single diffusers version string does not pin transitive deps."""
+    try:
+        out = subprocess.run([sys.executable, "-m", "pip", "freeze"],
+                             capture_output=True, text=True, timeout=120).stdout
+    except Exception:  # noqa: BLE001
+        return None
+    if not out.strip():
+        return None
+    p = OUT / "requirements.lock"
+    p.write_text(out, encoding="utf-8")
+    return p
+
+
+_REVS: dict[str, str | None] = {}
+
+
+def model_revision(repo_id: str) -> str | None:
+    """Pin the weights: HF repos are updated in place under the same id."""
+    if repo_id in _REVS:
+        return _REVS[repo_id]
+    sha = None
+    try:
+        from huggingface_hub import model_info
+
+        sha = model_info(repo_id, timeout=20).sha
+    except Exception:  # noqa: BLE001
+        sha = None
+    _REVS[repo_id] = sha
+    return sha
+
+
 def env_info() -> dict:
     info = {
         "host": platform.node(),
@@ -82,6 +144,8 @@ def env_info() -> dict:
         "python": sys.version.split()[0],
         "kernel": platform.release(),
         "started": now(),
+        "cgbench_version": _version(),
+        "git": _git_info(),
     }
     try:
         import torch

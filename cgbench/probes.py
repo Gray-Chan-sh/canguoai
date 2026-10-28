@@ -12,7 +12,7 @@ import traceback
 
 from . import metrics
 from .engines import build_engine
-from .harness import VIDEOS, Budget, Sampler, emit, env_info, skip
+from .harness import VIDEOS, Budget, Sampler, emit, env_info, model_revision, skip, write_lockfile
 from .spec import MODELS, NEGATIVE, PHASES, PROMPTS, RESOLUTIONS
 
 # Dynamic registry: spec.MODELS plus whatever the HF screening shortlisted.
@@ -121,6 +121,7 @@ def run_one(pool: EnginePool, cfg: dict, phase: str, idx: int, resume: bool = Tr
 
     rec = {
         "phase": phase, "model": model_key, "model_id": mcfg["model_id"],
+        "model_revision": model_revision(mcfg["model_id"]),
         "label": label, "width": w, "height": h, "frames": frames, "fps": fps,
         "steps": steps, "guidance": guidance, "dtype": dtype, "seed": seed,
         "prompt": prompt, "dry_run": pool.dry_run,
@@ -218,6 +219,9 @@ def run_all(dry_run: bool = False, resume: bool = True, cpu_offload: bool = Fals
 
     if "env:start" not in DONE:
         emit("env:start", {"env": env_info()})
+        lock = write_lockfile()
+        if lock:
+            print(f"[env] dependency lock -> {lock}")
 
     for name in (phases or list(PHASES)):
         if name not in PHASES:
